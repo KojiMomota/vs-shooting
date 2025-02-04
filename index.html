@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>2人対戦シューティングゲーム - キャラクター選択＆チャージショットプレビュー＆アイテム新仕様（Player2射撃：NumPad0／チャージ弾速度固定）</title>
+  <style>
+    body {
+      background-color: #222;
+      color: #fff;
+      font-family: sans-serif;
+      margin: 0;
+      padding: 0;
+      position: relative;
+    }
+    /* コントロールバー */
+    #controlPanel {
+      background-color: #333;
+      padding: 10px;
+      text-align: center;
+    }
+    #controlPanel label {
+      margin: 0 10px;
+    }
+    /* キャンバス */
+    #gameCanvas {
+      background: #000;
+      display: block;
+      margin: 20px auto;
+      border: 2px solid #fff;
+    }
+    /* キャラクター選択用パネル */
+    .characterSelection {
+      position: absolute;
+      top: 150px;
+      width: 100px;
+      z-index: 10;
+    }
+    #player1Selection { left: 10px; }
+    #player2Selection { right: 10px; }
+    .characterOption {
+      padding: 10px;
+      border: 1px solid #fff;
+      margin-bottom: 5px;
+      cursor: pointer;
+      text-align: center;
+      background-color: #444;
+    }
+    .characterOption.selected {
+      background-color: #777;
+    }
+  </style>
+</head>
+<body>
+  <h1 style="text-align:center;">2人対戦シューティングゲーム</h1>
+  <p class="instructions" style="text-align:center;">
+    Player 1: W/A/S/Dで移動、Fで射撃　
+    ｜　
+    Player 2: 矢印キーで移動、テンキーの0で射撃
+  </p>
+  <!-- コントロールバー -->
+  <div id="controlPanel">
+    <label>
+      移動速度:
+      <input type="range" id="moveSpeed" min="1" max="10" value="3">
+      <span id="moveSpeedVal">3</span>
+    </label>
+    <label>
+      弾の速度:
+      <input type="range" id="bulletSpeed" min="1" max="20" value="5">
+      <span id="bulletSpeedVal">5</span>
+    </label>
+    <label>
+      連射インターバル:
+      <input type="range" id="fireInterval" min="5" max="50" value="20">
+      <span id="fireIntervalVal">20</span>
+    </label>
+    <label>
+      アイテム出現:
+      <input type="checkbox" id="enableItems" checked>
+    </label>
+    <label>
+      アイテムの内容:
+      <input type="text" id="boxContents" value="SFIM">
+    </label>
+  </div>
+
+  <!-- キャラクター選択パネル（左：Player1、右：Player2） -->
+  <div id="player1Selection" class="characterSelection">
+    <div class="characterOption selected" data-type="normal" id="p1_normal">Normal</div>
+    <div class="characterOption" data-type="charge" id="p1_charge">Charge Shot</div>
+  </div>
+  <div id="player2Selection" class="characterSelection">
+    <div class="characterOption selected" data-type="normal" id="p2_normal">Normal</div>
+    <div class="characterOption" data-type="charge" id="p2_charge">Charge Shot</div>
+  </div>
+
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  
+  <script>
+    // ===== 定数 =====
+    const FADE_IN_DURATION = 30;      // 0.5秒 (30フレーム)
+    const VISIBLE_DURATION = 180;      // 3秒 (180フレーム)
+    const BLINK_DURATION = 120;        // 2秒 (120フレーム)
+    const TOTAL_LIFETIME = FADE_IN_DURATION + VISIBLE_DURATION + BLINK_DURATION; // 330フレーム
+    // アイテム出現間隔（ランダム 3～10秒：180～600フレーム）
+    function randomItemSpawnTime() {
+      return Math.floor(Math.random() * (600 - 180 + 1)) + 180;
+    }
+    
+    // ===== コントロールパネル =====
+    const moveSpeedInput    = document.getElementById('moveSpeed');
+    const moveSpeedVal      = document.getElementById('moveSpeedVal');
+    const bulletSpeedInput  = document.getElementById('bulletSpeed');
+    const bulletSpeedVal    = document.getElementById('bulletSpeedVal');
+    const fireIntervalInput = document.getElementById('fireInterval');
+    const fireIntervalVal   = document.getElementById('fireIntervalVal');
+    const enableItemsInput  = document.getElementById('enableItems');
+    const boxContentsInput  = document.getElementById('boxContents');
+
+    moveSpeedInput.addEventListener('input', () => { moveSpeedVal.textContent = moveSpeedInput.value; });
+    bulletSpeedInput.addEventListener('input', () => { bulletSpeedVal.textContent = bulletSpeedInput.value; });
+    fireIntervalInput.addEventListener('input', () => { fireIntervalVal.textContent = fireIntervalInput.value; });
+
+    // ===== キャラクター選択 =====
+    const p1_normal = document.getElementById('p1_normal');
+    const p1_charge = document.getElementById('p1_charge');
+    const p2_normal = document.getElementById('p2_normal');
+    const p2_charge = document.getElementById('p2_charge');
+
+    let player1Type = "normal";
+    let player2Type = "normal";
+
+    function selectCharacter(player, type) {
+      if (player === 1) {
+        player1Type = type;
+        p1_normal.classList.toggle('selected', type === "normal");
+        p1_charge.classList.toggle('selected', type === "charge");
+      } else if (player === 2) {
+        player2Type = type;
+        p2_normal.classList.toggle('selected', type === "normal");
+        p2_charge.classList.toggle('selected', type === "charge");
+      }
+    }
+
+    p1_normal.addEventListener('click', () => { selectCharacter(1, "normal"); });
+    p1_charge.addEventListener('click', () => { selectCharacter(1, "charge"); });
+    p2_normal.addEventListener('click', () => { selectCharacter(2, "normal"); });
+    p2_charge.addEventListener('click', () => { selectCharacter(2, "charge"); });
+
+    // ===== キャンバス取得 =====
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // ===== キー状態管理 =====
+    const keys = {};
+    document.addEventListener('keydown', (e) => {
+      keys[e.code] = true;
+      if(e.code === "KeyR" && (!player1.alive || !player2.alive)) {
+        resetGame();
+      }
+    });
+    document.addEventListener('keyup', (e) => {
+      keys[e.code] = false;
+      // Player1（チャージショット）：Fキー
+      if(e.code === "KeyF" && player1.characterType === "charge") {
+        if(player1.charging) {
+          shootChargeBullet(player1);
+          player1.charging = false;
+          player1.chargeTime = 0;
+          player1.shootCooldown = parseInt(fireIntervalInput.value);
+        }
+      }
+      // Player2（チャージショット）：テンキーの0
+      if(e.code === "Numpad0" && player2.characterType === "charge") {
+        if(player2.charging) {
+          shootChargeBullet(player2);
+          player2.charging = false;
+          player2.chargeTime = 0;
+          player2.shootCooldown = parseInt(fireIntervalInput.value);
+        }
+      }
+    });
+
+    // ===== プレイヤー定義 =====
+    // 各プレイヤーは characterType, charging, chargeTime を持つ
+    const player1 = {
+      x: 50,
+      y: canvas.height / 2 - 20,
+      width: 40,
+      height: 40,
+      color: 'blue',
+      baseSpeed: parseFloat(moveSpeedInput.value),
+      speed: parseFloat(moveSpeedInput.value),
+      direction: 'right',
+      shootCooldown: 0,
+      alive: true,
+      speedBoostTimer: 0,
+      fireRateTimer: 0,
+      invincibleTimer: 0,
+      multiShotTimer: 0,
+      characterType: "normal",  // "normal" または "charge"
+      charging: false,
+      chargeTime: 0
+    };
+
+    const player2 = {
+      x: canvas.width - 90,
+      y: canvas.height / 2 - 20,
+      width: 40,
+      height: 40,
+      color: 'red',
+      baseSpeed: parseFloat(moveSpeedInput.value),
+      speed: parseFloat(moveSpeedInput.value),
+      direction: 'left',
+      shootCooldown: 0,
+      alive: true,
+      speedBoostTimer: 0,
+      fireRateTimer: 0,
+      invincibleTimer: 0,
+      multiShotTimer: 0,
+      characterType: "normal",
+      charging: false,
+      chargeTime: 0
+    };
+
+    // ===== 弾とアイテム =====
+    const bullets = [];
+    const items = [];
+    let itemSpawnTimer = randomItemSpawnTime();
+
+    // ===== ヘルパー関数 =====
+    function getAngleFromDirection(direction) {
+      switch(direction) {
+        case 'up':    return -Math.PI / 2;
+        case 'down':  return Math.PI / 2;
+        case 'left':  return Math.PI;
+        case 'right': return 0;
+        default:      return 0;
+      }
+    }
+
+    function shootBullet(player, owner, angleOffset = 0) {
+      const baseAngle = getAngleFromDirection(player.direction);
+      const angle = baseAngle + angleOffset;
+      const speed = parseFloat(bulletSpeedInput.value);
+      const bullet = {
+        x: player.x + player.width/2 - 5,
+        y: player.y + player.height/2 - 5,
+        width: 10,
+        height: 10,
+        dx: speed * Math.cos(angle),
+        dy: speed * Math.sin(angle),
+        owner: owner
+      };
+      bullets.push(bullet);
+    }
+
+    function shootMultiBullet(player, owner) {
+      const spreadAngle = 20 * Math.PI / 180;
+      shootBullet(player, owner, -spreadAngle);
+      shootBullet(player, owner, 0);
+      shootBullet(player, owner, spreadAngle);
+    }
+
+    // チャージショット発射：chargeTimeに応じたサイズで弾を生成するが、速度は通常弾と同じ
+    function shootChargeBullet(player) {
+      let scale = 1 + (player.chargeTime / 30);
+      let bulletSize = 10 * scale;
+      let baseSpeed = parseFloat(bulletSpeedInput.value);
+      // ここで、弾の速度は通常弾と同じにする（scaleで割らない）
+      let bulletSpeed = baseSpeed;
+      let angle = getAngleFromDirection(player.direction);
+      const bullet = {
+        x: player.x + player.width/2 - bulletSize/2,
+        y: player.y + player.height/2 - bulletSize/2,
+        width: bulletSize,
+        height: bulletSize,
+        dx: bulletSpeed * Math.cos(angle),
+        dy: bulletSpeed * Math.sin(angle),
+        owner: (player === player1) ? 'player1' : 'player2'
+      };
+      bullets.push(bullet);
+    }
+
+    // アイテム生成：出現時に age = 0 を設定
+    function spawnItem(x, y) {
+      const contents = boxContentsInput.value;
+      if (contents.length === 0) return;
+      const types = contents.split('');
+      const type = types[Math.floor(Math.random() * types.length)];
+      const item = {
+        x: x - 10,
+        y: y - 10,
+        width: 20,
+        height: 20,
+        type: type,
+        age: 0
+      };
+      items.push(item);
+    }
+
+    function collides(a, b) {
+      return a.x < b.x + b.width &&
+             a.x + a.width > b.x &&
+             a.y < b.y + b.height &&
+             a.y + a.height > b.y;
+    }
+
+    function applyItemEffect(player, type) {
+      if (type === 'S') {
+        player.speedBoostTimer = 300;
+      } else if (type === 'F') {
+        player.fireRateTimer = 300;
+      } else if (type === 'I') {
+        player.invincibleTimer = 300;
+      } else if (type === 'M') {
+        player.multiShotTimer = 300;
+      }
+    }
+
+    // 目玉＋瞳描画（相手方向を向く）
+    function drawEyes(player, opponent) {
+      const centerX = player.x + player.width/2;
+      const centerY = player.y + player.height/2;
+      const oppCenterX = opponent.x + opponent.width/2;
+      const oppCenterY = opponent.y + opponent.height/2;
+      let dx = oppCenterX - centerX, dy = oppCenterY - centerY;
+      let mag = Math.sqrt(dx*dx + dy*dy);
+      let offsetX = 0, offsetY = 0;
+      const pupilOffset = 3;
+      if(mag > 0) {
+        offsetX = (dx/mag) * pupilOffset;
+        offsetY = (dy/mag) * pupilOffset;
+      }
+      const eyeballRadius = 8;
+      const pupilRadius = 3;
+      const eyeSeparation = 16;
+      
+      if(player.direction === 'up') {
+        const eyeY = player.y + 10;
+        const leftEyeX = player.x + player.width/2 - eyeSeparation/2;
+        const rightEyeX = player.x + player.width/2 + eyeSeparation/2;
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(leftEyeX, eyeY, eyeballRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(leftEyeX + offsetX, eyeY + offsetY, pupilRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(rightEyeX, eyeY, eyeballRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(rightEyeX + offsetX, eyeY + offsetY, pupilRadius, 0, Math.PI*2);
+        ctx.fill();
+      } else if(player.direction === 'down') {
+        const eyeY = player.y + player.height - 10;
+        const leftEyeX = player.x + player.width/2 - eyeSeparation/2;
+        const rightEyeX = player.x + player.width/2 + eyeSeparation/2;
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(leftEyeX, eyeY, eyeballRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(leftEyeX + offsetX, eyeY + offsetY, pupilRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(rightEyeX, eyeY, eyeballRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(rightEyeX + offsetX, eyeY + offsetY, pupilRadius, 0, Math.PI*2);
+        ctx.fill();
+      } else if(player.direction === 'left') {
+        const eyeX = player.x + 10;
+        const upperEyeY = player.y + player.height/2 - eyeSeparation/2;
+        const lowerEyeY = player.y + player.height/2 + eyeSeparation/2;
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(eyeX, upperEyeY, eyeballRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(eyeX + offsetX, upperEyeY + offsetY, pupilRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(eyeX, lowerEyeY, eyeballRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(eyeX + offsetX, lowerEyeY + offsetY, pupilRadius, 0, Math.PI*2);
+        ctx.fill();
+      } else if(player.direction === 'right') {
+        const eyeX = player.x + player.width - 10;
+        const upperEyeY = player.y + player.height/2 - eyeSeparation/2;
+        const lowerEyeY = player.y + player.height/2 + eyeSeparation/2;
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(eyeX, upperEyeY, eyeballRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(eyeX + offsetX, upperEyeY + offsetY, pupilRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(eyeX, lowerEyeY, eyeballRadius, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(eyeX + offsetX, lowerEyeY + offsetY, pupilRadius, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+
+    // ===== ゲーム状態更新 =====
+    function update() {
+      if(!player1.alive || !player2.alive) return;
+      
+      // 最新の移動速度を反映
+      player1.baseSpeed = parseFloat(moveSpeedInput.value);
+      player2.baseSpeed = parseFloat(moveSpeedInput.value);
+      
+      // アイテム効果タイマーのカウントダウン
+      if(player1.speedBoostTimer > 0) player1.speedBoostTimer--;
+      if(player1.fireRateTimer > 0) player1.fireRateTimer--;
+      if(player1.invincibleTimer > 0) player1.invincibleTimer--;
+      if(player1.multiShotTimer > 0) player1.multiShotTimer--;
+      if(player2.speedBoostTimer > 0) player2.speedBoostTimer--;
+      if(player2.fireRateTimer > 0) player2.fireRateTimer--;
+      if(player2.invincibleTimer > 0) player2.invincibleTimer--;
+      if(player2.multiShotTimer > 0) player2.multiShotTimer--;
+      
+      // 通常の移動速度
+      player1.speed = player1.baseSpeed * (player1.speedBoostTimer > 0 ? 2 : 1);
+      player2.speed = player2.baseSpeed * (player2.speedBoostTimer > 0 ? 2 : 1);
+      
+      // チャージショットの場合、キーが押されている間はチャージ状態＆移動速度半減
+      if(player1.characterType === "charge") {
+        if(keys["KeyF"]) {
+          player1.charging = true;
+          player1.chargeTime = Math.min(player1.chargeTime + 1, 120);
+        }
+        if(player1.charging) {
+          player1.speed /= 2;
+        }
+      } else {
+        if(keys["KeyF"] && player1.shootCooldown <= 0) {
+          if(player1.multiShotTimer > 0) {
+            shootMultiBullet(player1, 'player1');
+          } else {
+            shootBullet(player1, 'player1');
+          }
+          let interval = parseInt(fireIntervalInput.value);
+          if(player1.fireRateTimer > 0) interval = Math.floor(interval/2);
+          player1.shootCooldown = interval;
+        }
+        if(player1.shootCooldown > 0) player1.shootCooldown--;
+      }
+      
+      if(player2.characterType === "charge") {
+        if(keys["Numpad0"]) {
+          player2.charging = true;
+          player2.chargeTime = Math.min(player2.chargeTime + 1, 120);
+        }
+        if(player2.charging) {
+          player2.speed /= 2;
+        }
+      } else {
+        if(keys["Numpad0"] && player2.shootCooldown <= 0) {
+          if(player2.multiShotTimer > 0) {
+            shootMultiBullet(player2, 'player2');
+          } else {
+            shootBullet(player2, 'player2');
+          }
+          let interval = parseInt(fireIntervalInput.value);
+          if(player2.fireRateTimer > 0) interval = Math.floor(interval/2);
+          player2.shootCooldown = interval;
+        }
+        if(player2.shootCooldown > 0) player2.shootCooldown--;
+      }
+      
+      // Player1の移動（W/A/S/D）
+      if(keys["KeyW"]) { player1.y -= player1.speed; player1.direction = 'up'; }
+      if(keys["KeyS"]) { player1.y += player1.speed; player1.direction = 'down'; }
+      if(keys["KeyA"]) { player1.x -= player1.speed; player1.direction = 'left'; }
+      if(keys["KeyD"]) { player1.x += player1.speed; player1.direction = 'right'; }
+      if(player1.x < 0) player1.x = 0;
+      if(player1.x + player1.width > canvas.width) player1.x = canvas.width - player1.width;
+      if(player1.y < 0) player1.y = 0;
+      if(player1.y + player1.height > canvas.height) player1.y = canvas.height - player1.height;
+      
+      // Player2の移動（矢印キー）
+      if(keys["ArrowUp"]) { player2.y -= player2.speed; player2.direction = 'up'; }
+      if(keys["ArrowDown"]) { player2.y += player2.speed; player2.direction = 'down'; }
+      if(keys["ArrowLeft"]) { player2.x -= player2.speed; player2.direction = 'left'; }
+      if(keys["ArrowRight"]) { player2.x += player2.speed; player2.direction = 'right'; }
+      if(player2.x < 0) player2.x = 0;
+      if(player2.x + player2.width > canvas.width) player2.x = canvas.width - player2.width;
+      if(player2.y < 0) player2.y = 0;
+      if(player2.y + player2.height > canvas.height) player2.y = canvas.height - player2.height;
+      
+      // 弾の更新
+      for(let i = bullets.length - 1; i >= 0; i--) {
+        const bullet = bullets[i];
+        bullet.x += bullet.dx;
+        bullet.y += bullet.dy;
+        if(bullet.x < 0 || bullet.x > canvas.width || bullet.y < 0 || bullet.y > canvas.height) {
+          bullets.splice(i, 1);
+          continue;
+        }
+        if(bullet.owner === 'player1' && collides(bullet, player2)) {
+          if(player2.invincibleTimer <= 0) { player2.alive = false; }
+          bullets.splice(i, 1);
+          continue;
+        } else if(bullet.owner === 'player2' && collides(bullet, player1)) {
+          if(player1.invincibleTimer <= 0) { player1.alive = false; }
+          bullets.splice(i, 1);
+          continue;
+        }
+      }
+      
+      // 各アイテムの age 更新（ライフサイクル管理）
+      for(let i = items.length - 1; i >= 0; i--) {
+        items[i].age++;
+        if(items[i].age >= TOTAL_LIFETIME) {
+          items.splice(i, 1);
+          continue;
+        }
+      }
+      
+      // アイテムとの衝突判定
+      for(let i = items.length - 1; i >= 0; i--) {
+        const item = items[i];
+        if(collides(item, player1)) {
+          applyItemEffect(player1, item.type);
+          items.splice(i, 1);
+          continue;
+        }
+        if(collides(item, player2)) {
+          applyItemEffect(player2, item.type);
+          items.splice(i, 1);
+          continue;
+        }
+      }
+      
+      // アイテム出現
+      if(enableItemsInput.checked) {
+        itemSpawnTimer--;
+        if(itemSpawnTimer <= 0) {
+          const x = Math.random() * (canvas.width - 20) + 10;
+          const y = Math.random() * (canvas.height - 20) + 10;
+          spawnItem(x, y);
+          itemSpawnTimer = randomItemSpawnTime();
+        }
+      } else {
+        items.length = 0;
+      }
+      
+      // 最新のキャラクター選択を反映
+      player1.characterType = player1Type;
+      player2.characterType = player2Type;
+    }
+
+    // ===== 描画処理 =====
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // アイテム描画：フェードイン、完全表示、点滅処理
+      items.forEach(item => {
+        let alpha = 1;
+        if(item.age < FADE_IN_DURATION) {
+          alpha = item.age / FADE_IN_DURATION;
+        } else if(item.age >= FADE_IN_DURATION + VISIBLE_DURATION) {
+          if(Math.floor((item.age - (FADE_IN_DURATION + VISIBLE_DURATION)) / 10) % 2 === 0) {
+            alpha = 1;
+          } else {
+            alpha = 0;
+          }
+        }
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = 'black';
+        ctx.fillRect(item.x, item.y, item.width, item.height);
+        ctx.strokeStyle = 'white';
+        ctx.strokeRect(item.x, item.y, item.width, item.height);
+        ctx.fillStyle = 'white';
+        ctx.font = '16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(item.type, item.x + item.width/2, item.y + item.height/2);
+        ctx.globalAlpha = 1.0;
+      });
+      
+      // チャージショットプレビュー：プレイヤー前方に半透明で表示
+      [player1, player2].forEach(player => {
+        if(player.characterType === "charge" && player.charging) {
+          let scale = 1 + (player.chargeTime / 30);
+          let bulletSize = 10 * scale;
+          let angle = getAngleFromDirection(player.direction);
+          let centerX = player.x + player.width/2;
+          let centerY = player.y + player.height/2;
+          let offsetDistance = player.width/2 + bulletSize/2 + 5;
+          let previewX = centerX + offsetDistance * Math.cos(angle) - bulletSize/2;
+          let previewY = centerY + offsetDistance * Math.sin(angle) - bulletSize/2;
+          ctx.globalAlpha = 0.5;
+          ctx.fillStyle = player.color;
+          ctx.fillRect(previewX, previewY, bulletSize, bulletSize);
+          ctx.globalAlpha = 1.0;
+        }
+      });
+      
+      // プレイヤー描画（無敵時は金色枠、目玉＋瞳付き）
+      if(player1.alive) {
+        ctx.fillStyle = player1.color;
+        ctx.fillRect(player1.x, player1.y, player1.width, player1.height);
+        drawEyes(player1, player2);
+        if(player1.invincibleTimer > 0) {
+          ctx.strokeStyle = 'gold';
+          ctx.lineWidth = 3;
+          ctx.strokeRect(player1.x, player1.y, player1.width, player1.height);
+        }
+      }
+      if(player2.alive) {
+        ctx.fillStyle = player2.color;
+        ctx.fillRect(player2.x, player2.y, player2.width, player2.height);
+        drawEyes(player2, player1);
+        if(player2.invincibleTimer > 0) {
+          ctx.strokeStyle = 'gold';
+          ctx.lineWidth = 3;
+          ctx.strokeRect(player2.x, player2.y, player2.width, player2.height);
+        }
+      }
+      
+      // 弾描画：発射したプレイヤーの色で描画
+      bullets.forEach(bullet => {
+        if(bullet.owner === 'player1') {
+          ctx.fillStyle = player1.color;
+        } else if(bullet.owner === 'player2') {
+          ctx.fillStyle = player2.color;
+        } else {
+          ctx.fillStyle = 'yellow';
+        }
+        ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+      });
+      
+      // ゲームオーバー表示
+      if(!player1.alive || !player2.alive) {
+        ctx.fillStyle = 'white';
+        ctx.font = '48px sans-serif';
+        ctx.textAlign = 'center';
+        let message = '';
+        if(!player1.alive && !player2.alive) { message = "引き分け！"; }
+        else if(!player1.alive) { message = "Player 2 の勝ち！"; }
+        else if(!player2.alive) { message = "Player 1 の勝ち！"; }
+        ctx.fillText(message, canvas.width/2, canvas.height/2);
+        ctx.font = '24px sans-serif';
+        ctx.fillText("リセットするには R キーを押してください", canvas.width/2, canvas.height/2 + 40);
+      }
+    }
+
+    // ===== ゲームリセット =====
+    function resetGame() {
+      player1.x = 50;
+      player1.y = canvas.height/2 - 20;
+      player1.direction = 'right';
+      player1.alive = true;
+      player1.shootCooldown = 0;
+      player1.speedBoostTimer = 0;
+      player1.fireRateTimer = 0;
+      player1.invincibleTimer = 0;
+      player1.multiShotTimer = 0;
+      player1.charging = false;
+      player1.chargeTime = 0;
+      
+      player2.x = canvas.width - 90;
+      player2.y = canvas.height/2 - 20;
+      player2.direction = 'left';
+      player2.alive = true;
+      player2.shootCooldown = 0;
+      player2.speedBoostTimer = 0;
+      player2.fireRateTimer = 0;
+      player2.invincibleTimer = 0;
+      player2.multiShotTimer = 0;
+      player2.charging = false;
+      player2.chargeTime = 0;
+      
+      bullets.length = 0;
+      items.length = 0;
+      itemSpawnTimer = randomItemSpawnTime();
+    }
+
+    // ===== メインループ =====
+    function gameLoop() {
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+    gameLoop();
+  </script>
+</body>
+</html>
